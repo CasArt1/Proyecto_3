@@ -6,7 +6,7 @@ from backtesting import backtest_strategy
 from plot_signal import plot_trading_signals
 
 if __name__ == "__main__":
-    tickers = ["UNP", "CSX"]
+    tickers = ["CDNS", "SNPS"]
 
    
     download_data(tickers)
