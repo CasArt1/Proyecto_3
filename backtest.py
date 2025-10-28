@@ -126,6 +126,18 @@ def run_backtest(
             trades += 1
             equity *= (1 - bps) ** 2  # two legs
 
+        if p_prev == 0 and p != 0:
+            entries_idx.append(df.index[t])
+            entry_sides.append(int(p))
+            entry_equity = equity  # guarda equity al abrir
+        elif p_prev != 0 and p == 0:
+            exits_idx.append(df.index[t])
+            # win si equity de salida > equity de entrada
+            if "entry_equity" in locals():
+                if equity > entry_equity:
+                    roundtrip_wins += 1
+                del entry_equity
+
             # Track trade markers
             if p_prev == 0 and p != 0:
                 entries_idx.append(df.index[t])

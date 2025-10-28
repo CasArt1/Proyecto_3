@@ -8,7 +8,7 @@ from pair_selection import find_top_pairs
 
 # ✅ Config
 COSTS_BPS = 12.5
-BORROW_ANNUAL = 0.25
+BORROW_ANNUAL = 0.0025
 TOP_K = 5
 
 # ✅ Objective for Optuna (Sharpe Ratio maximization)
@@ -34,7 +34,7 @@ def objective(trial, x, y):
             borrow_annual=BORROW_ANNUAL
         )
         sharpe = float(result.get("sharpe_daily", 0))
-        return -abs(sharpe)  # minimize negative Sharpe
+        return -sharpe  # minimize negative Sharpe
     except Exception as e:
         print("⚠️ Error:", e)
         return 9999
