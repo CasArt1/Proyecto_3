@@ -9,17 +9,17 @@ from sklearn.linear_model import LinearRegression
 # ✅ Final Universe: 50 Tech Stocks
 def get_us_tech50() -> list[str]:
     return [
-        "AAPL", "MSFT", "GOOGL", "AMZN",
-        "IBM", "ORCL", "CSCO", "INTC",
-        "NVDA", "AMD", "TXN", "QCOM", "AVGO", "ADI",
-        "AMAT", "LRCX", "KLAC", "MU", "MCHP", "ON", "MRVL", "MPWR", "SWKS", "TER",
-        "ADBE", "CRM", "INTU", "ADSK", "ANSS", "AKAM", "FTNT", "VRSN",
-        "CDNS", "SNPS",
-        "ACN", "ADP", "PAYX", "CTSH",
-        "NTAP", "STX", "WDC", "HPQ", "XRX",
-        "NFLX", "EBAY", "EXPE",
-        "FFIV", "CHKP", "JNPR",
-        "TYL",
+        "AAPL","MSFT","GOOGL","AMZN","ORCL","IBM","CSCO","INTC","NVDA","AMD",
+    "TXN","QCOM","AVGO","ADI","AMAT","LRCX","KLAC","MU","MCHP","ON",
+    "MRVL","MPWR","SWKS","TER","ADBE","CRM","INTU","ADSK","ANSS","AKAM",
+    "FTNT","VRSN","CDNS","SNPS","ACN","ADP","PAYX","CTSH","NTAP","STX",
+    "JPM","BAC","C","WFC","GS","MS","BLK","BK","SCHW","AXP",
+    "USB","PNC","SPGI","ICE","CME","GE","HON","MMM","CAT","DE",
+    "BA","LMT","GD","NOC","UPS","FDX","ETN","XOM","CVX","COP",
+    "SLB","HAL","EOG","OXY","VLO","NEE","DUK","SO","AEP","EXC",
+    "PG","KO","PEP","WMT","COST","CL","KMB","GIS","KR","SYY",
+    "HD","LOW","MCD","SBUX","TGT","TJX","NKE","T","VZ","CMCSA",
+    "PFE","MRK","ABT","JNJ"
     ]
 
 # Helpers

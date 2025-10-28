@@ -13,10 +13,13 @@ TOP_K = 5
 
 # ✅ Objective for Optuna (Sharpe Ratio maximization)
 def objective(trial, x, y):
-    log10_q = trial.suggest_float("log10_q", -6, -2)
+    # Entry Z: allow slightly wide bands
+    z_entry = trial.suggest_float("z_entry", 1.5, 2.2)
+    z_exit  = trial.suggest_float("z_exit", 0.3, 0.8)
+    log10_q = trial.suggest_float("log10_q", -4, -1)
     log10_r = trial.suggest_float("log10_r", -6, -2)
-    z_entry = trial.suggest_float("z_entry", 1.5, 3.5)
-    z_exit = trial.suggest_float("z_exit", 0.05, 0.5)
+    # R ~ 1e-6 to 1e-3
+
 
     q = 10 ** log10_q
     r = 10 ** log10_r
@@ -42,7 +45,7 @@ def optimize_pair(x_ticker, y_ticker, closes):
     x, y = closes[x_ticker].dropna(), closes[y_ticker].dropna()
 
     study = optuna.create_study(direction="minimize")
-    study.optimize(lambda t: objective(t, x, y), n_trials=30, show_progress_bar=False)
+    study.optimize(lambda t: objective(t, x, y), n_trials=100, show_progress_bar=False)
 
     best = study.best_params
     best["best_sharpe"] = -study.best_value
