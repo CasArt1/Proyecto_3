@@ -1,63 +1,46 @@
+# kalman_filter.py
 import numpy as np
-from pykalman import KalmanFilter
+import pandas as pd
+from sklearn.linear_model import LinearRegression
 
-
-def run_kalman(x, y, q=0.001, r=0.001):
+def run_kalman(price_x: pd.Series,
+               price_y: pd.Series,
+               q: float = 1e-3,
+               r: float = 1e-3,
+               lookback_beta: int = 63,
+               lookback_z: int = 63) -> dict:
     """
-    Returns:
-        dict with keys: beta, alpha, spread, zscore
+    Rolling OLS to approximate dynamic hedge ratio.
+    Returns dict with pandas Series:
+      - 'hedge_ratio'  : rolling beta(t)
+      - 'spread'       : x - beta*y (using beta(t))
+      - 'zscore'       : z of spread with rolling mean/std
     """
+    df = pd.concat([price_x.rename("x"), price_y.rename("y")], axis=1).dropna()
+    x = np.log(df["x"].values)
+    y = np.log(df["y"].values)
 
-    # Convert to numpy
-    x = np.array(x).flatten()
-    y = np.array(y).flatten()
+    betas = np.full(len(df), np.nan, dtype=float)
+    for i in range(lookback_beta, len(df)):
+        Xw = y[i - lookback_beta:i].reshape(-1, 1)
+        yw = x[i - lookback_beta:i]
+        try:
+            model = LinearRegression().fit(Xw, yw)
+            betas[i] = float(model.coef_[0])
+        except Exception:
+            betas[i] = np.nan
 
-    # Drop NaNs
-    mask = ~(np.isnan(x) | np.isnan(y))
-    x = x[mask]
-    y = y[mask]
+    # forward-fill a bit to avoid gaps at trade time
+    betas = pd.Series(betas, index=df.index).ffill()
 
-    # Kalman Filter setup
-    # State: [beta, alpha]
-    transition_matrix = np.eye(2)  # Keep prev state
-    transition_covariance = q * np.eye(2)
+    spread = pd.Series(x, index=df.index) - betas * pd.Series(y, index=df.index)
 
-    # Obs model: x_t = beta * y_t + alpha
-    observation_matrix = np.column_stack([y, np.ones_like(y)])
-    observation_covariance = r * np.eye(1)
-
-    # Reshape obs_matrix for pykalman: (timesteps, 1, 2)
-    observation_matrix = observation_matrix.reshape((-1, 1, 2))
-
-    # Initialize Kalman Filter
-    kf = KalmanFilter(
-        transition_matrices=transition_matrix,
-        observation_matrices=observation_matrix,
-        transition_covariance=transition_covariance,
-        observation_covariance=observation_covariance,
-        initial_state_mean=np.zeros(2),
-        initial_state_covariance=np.eye(2)
-    )
-
-    # Run filter
-    state_means, _ = kf.smooth(x)
-
-    beta = state_means[:, 0]
-    alpha = state_means[:, 1]
-
-    # Spread
-    spread = x - (beta * y + alpha)
-
-    # Z-score
-    spread_mean = np.nanmean(spread)
-    spread_std = np.nanstd(spread)
-    zscore = (spread - spread_mean) / spread_std
+    m = spread.rolling(lookback_z).mean()
+    s = spread.rolling(lookback_z).std()
+    z = (spread - m) / s
 
     return {
-        "beta": beta,
-        "alpha": alpha,
+        "hedge_ratio": betas,
         "spread": spread,
-        "zscore": zscore,
-        "clean_x": x,
-        "clean_y": y
+        "zscore": z
     }

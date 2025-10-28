@@ -1,193 +1,220 @@
-# pair_selection.py — Global Tech (~50) with 15y filter + rolling-window cointegration
+# pair_selection.py
 import os
-import datetime as dt
-import warnings
-from itertools import combinations
-
 import numpy as np
 import pandas as pd
-import yfinance as yf
+from itertools import combinations
 from statsmodels.tsa.stattools import coint, adfuller
+from sklearn.linear_model import LinearRegression
 
-warnings.filterwarnings("ignore")
+# -------------------------------
+# Universe: 50 US Tech tickers (15y+ history)
+# -------------------------------
+def get_us_tech50() -> list[str]:
+    return [
+        # Megacaps / platform
+        "AAPL","MSFT","GOOGL","AMZN",
+        # Legacy enterprise
+        "IBM","ORCL","CSCO","INTC",
+        # Semis
+        "NVDA","AMD","TXN","QCOM","AVGO","ADI",
+        "AMAT","LRCX","KLAC","MU","MCHP","ON","MRVL","MPWR","SWKS","TER",
+        # Software
+        "ADBE","CRM","INTU","ADSK","ANSS","AKAM","FTNT","VRSN",
+        # EDA
+        "CDNS","SNPS",
+        # IT services & payroll
+        "ACN","ADP","PAYX","CTSH",
+        # Storage / hardware
+        "NTAP","STX","WDC","HPQ","XRX",
+        # Internet / media / travel
+        "NFLX","EBAY","EXPE",
+        # Networking / security
+        "FFIV","CHKP","JNPR",
+        # Gov / ERP
+        "TYL",
+    ]  # 50
 
-YEARS = 15
-ROLL_YEARS = 3
-STEP_MONTHS = 3
-MIN_PASS_RATIO = 0.70
-MIN_CORR = 0.70
-DATA_DIR = "data"
-OUT_CSV = os.path.join(DATA_DIR, "stocks.csv")
+# -------------------------------
+# Helpers
+# -------------------------------
+def engle_granger_p(x: pd.Series, y: pd.Series) -> float:
+    """Engle–Granger cointegration test p-value on log prices."""
+    _, pval, _ = coint(np.log(x), np.log(y))
+    return float(pval)
 
-# Approximate global large/mega cap tech universe (US + ADR + key non-US listings).
-# Yahoo tickers often need suffixes (e.g., .HK, .KS, .T, .VX). We rely on the 15y filter anyway.
-GLOBAL_TECH_CANDIDATES = [
-    # US megacaps / large caps
-    "AAPL","MSFT","NVDA","AMZN","GOOGL","GOOG","META","AVGO","ORCL","IBM","CSCO","ADBE","CRM",
-    "AMD","INTC","QCOM","TXN","ADI","MU","AMAT","LRCX","KLAC","CDNS","SNPS","INTU","NOW",
-    "PYPL","ADP","PAYX","PANW","FTNT","CRWD","ACN","SHOP","SQ","UBER","TSLA",  # (TSLA behaves like Tech)
-    # ADRs / non-US listings with long history (most have 15+ years)
-    "TSM",               # Taiwan Semi (ADR)
-    "ASML.AS","ASML",    # ASML (Euronext / NY ADR)
-    "SAP","SAP.DE",      # SAP (US ADR / Xetra)
-    "SONY","6758.T",     # Sony (ADR / Tokyo)
-    "ERIC","ERIC-B.ST",  # Ericsson (ADR / Stockholm B)
-    "NTES",              # NetEase (ADR, long history)
-    "INFY","TCS.NS","WIT","HCLTECH.NS","TECHM.NS",  # India IT (ADR / NSE)
-    "NXPI","STM","SWKS","MPWR","MRVL","MCHP","ON",   # global semi names (US-listed)
-    "ARM",               # note: may be <15y; filter will drop if insufficient history
-    "BIDU","BABA","PDD","JD",  # China ADRs (some <15y; filter will drop)
-    "0700.HK",           # Tencent (HK)
-    "3690.HK",           # Meituan (may be <15y; filter will drop)
-    "005930.KS",         # Samsung Elec (KRX)
-    "000660.KS",         # SK Hynix (KRX)
-    "2330.TW",           # Taiwan Semi (local)
-    "0703.HK",           # hypothetical; harmless b/c of filter if invalid
-]
+def ols_beta(x: pd.Series, y: pd.Series) -> float:
+    """OLS hedge ratio for spread = log(x) - beta*log(y)."""
+    X = np.log(y).values.reshape(-1, 1)
+    yv = np.log(x).values
+    model = LinearRegression().fit(X, yv)
+    return float(model.coef_[0])
 
-def download_one(ticker: str, start, end):
-    """Robust per-ticker download (auto_adjust=True). Returns pd.Series Close or None."""
-    try:
-        df = yf.download(
-            ticker, start=start, end=end,
-            auto_adjust=True, progress=False, threads=False
-        )
-        if df is None or df.empty or "Close" not in df.columns:
-            return None
-        s = df["Close"].rename(ticker)
-        s = s[~s.index.duplicated(keep="first")].dropna()
-        return s
-    except Exception:
-        return None
+def spread_series(x: pd.Series, y: pd.Series, beta: float) -> pd.Series:
+    return np.log(x) - beta * np.log(y)
 
-def filter_by_history(tickers, start, end):
-    """Return (keep_list, series_map) for tickers with ≥15y history and enough obs."""
-    cutoff = pd.Timestamp(start)
-    keep, series = [], {}
-    for t in tickers:
-        s = download_one(t, start, end)
-        if s is None or s.empty:
-            continue
-        # require first date <= cutoff and at least ~200 trading days/yr
-        if s.index.min() <= cutoff and s.count() >= YEARS * 200:
-            keep.append(t)
-            series[t] = s
-    return keep, series
+def adf_p(series: pd.Series) -> float:
+    """ADF p-value (lower = more stationary)."""
+    series = pd.Series(series).dropna()
+    return float(adfuller(series, autolag="AIC")[1])
 
-def rolling_windows_index(idx, win_days, step_days):
-    start = idx.min()
-    end = idx.max()
-    anchors = []
-    cur = start
-    while cur + pd.Timedelta(days=win_days) <= end:
-        anchors.append(cur)
-        cur += pd.Timedelta(days=step_days)
-    locs = []
-    for a in anchors:
-        i0 = idx.get_indexer([a], method="nearest")[0]
-        i1 = idx.get_indexer([a + pd.Timedelta(days=win_days)], method="nearest")[0]
-        if i1 > i0 + 5:
-            locs.append((i0, i1))
-    return locs
-
-def window_tests(x, y):
-    """Return (Engle–Granger p, spread ADF p)."""
-    eg_p = coint(x, y)[1]
-    try:
-        beta = np.polyfit(y, x, 1)[0]
-        spread = x - beta * y
-    except Exception:
-        spread = x - y
-    try:
-        adf_p = adfuller(spread, maxlag=1, autolag="AIC")[1]
-    except Exception:
-        adf_p = 1.0
-    return float(eg_p), float(adf_p)
-
-def score_pair(x, y, idx, win_days, step_days):
-    corr = pd.Series(x, index=idx).corr(pd.Series(y, index=idx))
-    if not np.isfinite(corr) or corr < MIN_CORR:
-        return None
-    wins = rolling_windows_index(idx, win_days, step_days)
-    if len(wins) == 0:
-        return None
-
-    eg_ps, adf_ps, pass_count = [], [], 0
-    for i0, i1 in wins:
-        xx, yy = x[i0:i1], y[i0:i1]
-        if len(xx) < 50 or len(yy) < 50:
-            continue
-        eg_p, adf_p = window_tests(xx, yy)
-        eg_ps.append(eg_p); adf_ps.append(adf_p)
-        if eg_p < 0.05 and adf_p < 0.05:
-            pass_count += 1
-
-    if len(eg_ps) == 0:
-        return None
-
-    pass_ratio = pass_count / len(eg_ps)
-    if pass_ratio < MIN_PASS_RATIO:
-        return None
-
-    eg_mean = float(np.mean(eg_ps))
-    adf_mean = float(np.mean(adf_ps))
-    eg_score = 1.0 - eg_mean
-    adf_score = 1.0 - adf_mean
-    score = float(corr) * (0.5 * eg_score + 0.5 * adf_score) * pass_ratio
-
-    return {
-        "corr": float(corr),
-        "eg_mean": eg_mean,
-        "adf_mean": adf_mean,
-        "pass_ratio": float(pass_ratio),
-        "score": float(score),
-    }
-
-def find_best_pair(closes: pd.DataFrame | None = None, years: int = YEARS):
+def half_life(series: pd.Series) -> float:
     """
-    Build a global tech universe (~50 large/mega-cap),
-    keep only tickers with >= 15y data, run rolling-window cointegration,
-    save the BEST pair's prices to data/stocks.csv, and return (x, y).
+    Estimate mean-reversion half-life (in trading days) of the spread via AR(1).
     """
-    os.makedirs(DATA_DIR, exist_ok=True)
-    end = pd.Timestamp.today().normalize()
-    start = end - pd.DateOffset(years=years)
+    s = pd.Series(series).dropna()
+    if len(s) < 20:
+        return np.inf
+    ds = s.diff().dropna()
+    lag = s.shift(1).reindex(ds.index)
+    X = lag.values.reshape(-1, 1)
+    y = ds.values
+    try:
+        reg = LinearRegression().fit(X, y)
+        phi = float(reg.coef_[0])
+    except Exception:
+        return np.inf
+    if phi >= 0:
+        return np.inf
+    hl = -np.log(2) / phi
+    return float(hl) if np.isfinite(hl) and hl > 0 else np.inf
 
-    if closes is None:
-        candidates = list(dict.fromkeys(GLOBAL_TECH_CANDIDATES))  # de-dup while keep order
-        keep, series_map = filter_by_history(candidates, start=start, end=end)
-        if len(keep) < 2:
-            raise RuntimeError("No global tech tickers with ≥15y history found.")
-        df = pd.concat([series_map[t] for t in keep], axis=1).dropna()
-        df = df.asfreq("B").ffill()
-    else:
-        df = closes.copy().dropna().asfreq("B").ffill()
+def beta_stability(x: pd.Series, y: pd.Series, lookback: int = 63) -> float:
+    """Std of rolling OLS betas (lower = more stable)."""
+    if len(x) <= lookback + 20:
+        return np.inf
+    betas = []
+    for i in range(lookback, len(x)):
+        try:
+            b = ols_beta(x.iloc[i-lookback:i], y.iloc[i-lookback:i])
+            betas.append(b)
+        except Exception:
+            pass
+    b = pd.Series(betas)
+    return float(b.std()) if len(b) > 10 else np.inf
 
-    print(f"Universe (global tech, ≥15y): {df.shape[1]} tickers")
+# -------------------------------
+# Main selector
+# -------------------------------
+def find_best_pair(closes: pd.DataFrame, save_csv: bool = True) -> tuple[str, str]:
+    """
+    Given a wide DataFrame of Adj Close (Date index, columns=tickers),
+    return (x_ticker, y_ticker) that passes robust filters and ranks best.
+    Optionally saves best pair price history to data/stocks.csv
+    """
+    # Clean to common dates & drop NaNs
+    closes = closes.sort_index().dropna(how="all", axis=1)
+    # Require ~15y * 200 trading days coverage (rough min)
+    tickers = [c for c in closes.columns if closes[c].count() >= int(15 * 200)]
+    closes = closes[tickers].dropna()
 
-    idx = df.index
-    win_days = int(ROLL_YEARS * 252)
-    step_days = int(STEP_MONTHS * 21)
+    if len(closes.columns) < 2:
+        raise RuntimeError("Not enough valid tickers with ~15y history.")
 
-    best, best_pair = None, None
-    cols = df.columns.tolist()
-    for a, b in combinations(cols, 2):
-        x = df[a].values
-        y = df[b].values
-        res = score_pair(x, y, idx, win_days, step_days)
-        if res is None:
+    # Rolling 1y corr helper
+    def one_year_corr(a: pd.Series, b: pd.Series) -> float:
+        win = 252
+        ab = pd.concat([a, b], axis=1).dropna()
+        if len(ab) < win + 5:
+            return -1.0
+        return float(ab.iloc[:,0].rolling(win).corr(ab.iloc[:,1]).dropna().iloc[-1])
+
+    rows = []
+    pairs = list(combinations(closes.columns, 2))
+
+    for xt, yt in pairs:
+        xy = pd.concat([closes[xt], closes[yt]], axis=1).dropna()
+        if len(xy) < 252*5:
             continue
-        if (best is None) or (res["score"] > best["score"]):
-            best = res
-            best_pair = (a, b)
+        x, y = xy.iloc[:,0], xy.iloc[:,1]
 
-    if best_pair is None:
-        raise RuntimeError("No pair met the rolling-window cointegration criteria.")
+        # 1) Rolling corr (1y)
+        rc = one_year_corr(x, y)
+        if rc < 0.70:
+            continue
 
-    best_df = df.loc[:, [best_pair[0], best_pair[1]]].copy()
-    best_df.to_csv(OUT_CSV)
-    print(f"🏆 Best pair selected: {best_pair}")
-    print(f"💾 Saved best pair {best_pair} → {OUT_CSV}")
-    print(f"Rolling stats: corr={best['corr']:.3f}, pass_ratio={best['pass_ratio']:.2f}, "
-          f"EG_mean_p={best['eg_mean']:.4f}, ADF_mean_p={best['adf_mean']:.4f}, score={best['score']:.4f}")
-    return best_pair
+        # 2) EG cointegration on log prices
+        eg = engle_granger_p(x, y)
+        if eg >= 0.05:
+            continue
+
+        # 3) Spread stationarity
+        beta = ols_beta(x, y)
+        spr = spread_series(x, y, beta)
+        spr_adf = adf_p(spr)
+        if spr_adf >= 0.05:
+            continue
+
+        # 4) Half-life (≤ 50 trading days)
+        hl = half_life(spr)
+        if not np.isfinite(hl) or hl > 50:
+            continue
+
+        # 5) Beta stability (≤ 0.50)
+        drift = beta_stability(x, y, lookback=63)
+        if not np.isfinite(drift) or drift > 0.50:
+            continue
+
+        rows.append({
+            "x": xt, "y": yt,
+            "roll_corr_1y": rc,
+            "eg_p": eg,
+            "spread_adf_p": spr_adf,
+            "half_life": hl,
+            "beta": beta,
+            "beta_drift": drift
+        })
+
+    if not rows:
+        # Diagnostic printout so you know which filter kills most pairs
+        failed = dict(corr=0, eg=0, adf=0, hl=0, drift=0)
+        for xt, yt in pairs:
+            xy = pd.concat([closes[xt], closes[yt]], axis=1).dropna()
+            if len(xy) < 252*5:
+                continue
+            x, y = xy.iloc[:,0], xy.iloc[:,1]
+
+            rc = one_year_corr(x, y)
+            if rc < 0.70:
+                failed["corr"] += 1
+                continue
+            eg = engle_granger_p(x, y)
+            if eg >= 0.05:
+                failed["eg"] += 1
+                continue
+            beta = ols_beta(x, y)
+            spr = spread_series(x, y, beta)
+            spr_adf = adf_p(spr)
+            if spr_adf >= 0.05:
+                failed["adf"] += 1
+                continue
+            hl = half_life(spr)
+            if not np.isfinite(hl) or hl > 50:
+                failed["hl"] += 1
+                continue
+            drift = beta_stability(x, y, lookback=63)
+            if not np.isfinite(drift) or drift > 0.50:
+                failed["drift"] += 1
+                continue
+
+        print("\n⚠️ FILTER RESULTS — No pair passed all filters:")
+        for k, v in failed.items():
+            print(f"Failed {k}: {v}")
+        raise RuntimeError("No pairs passed all filters. Adjust thresholds slightly.")
+
+    df = pd.DataFrame(rows).sort_values(
+        by=["roll_corr_1y", "eg_p", "spread_adf_p", "half_life", "beta_drift"],
+        ascending=[False, True, True, True, True]
+    )
+
+    print("\nTop candidates (up to 20):")
+    print(df.head(20).to_string(index=False))
+
+    best = df.iloc[0]
+    x_t, y_t = best["x"], best["y"]
+
+    if save_csv:
+        os.makedirs("data", exist_ok=True)
+        closes[[x_t, y_t]].to_csv("data/stocks.csv")
+        print(f"\n💾 Saved best pair ('{x_t}', '{y_t}') → data/stocks.csv")
+
+    return x_t, y_t

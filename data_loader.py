@@ -1,89 +1,54 @@
-# ==========================================================
-# data_loader.py  ✅ Updated for latest yfinance changes
-# ==========================================================
+# data_loader.py
 import os
 import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
 
+DATA_DIR = "data"
+os.makedirs(DATA_DIR, exist_ok=True)
 
-# ============================================
-# Internal utility for robust CSV reading
-# ============================================
-def _read_csv_any(cache_path: str) -> pd.DataFrame:
-    df0 = pd.read_csv(cache_path, nrows=5)
-    cols = df0.columns.tolist()
+# ✅ Download universe-level OHLCV data
+def download_data(tickers=None, years=15):
+    if tickers is None:
+        # Default — first 100 S&P tickers (saved by pair_selection)
+        tickers = pd.read_csv("data/sp100.csv")["Symbol"].tolist()
 
-    if "Date" in cols:
-        df = pd.read_csv(cache_path, index_col="Date", parse_dates=["Date"])
-    else:
-        df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
-        df.index.name = "Date"
-
-    return df.sort_index().ffill().dropna(how="all")
-
-
-# ============================================
-# ✅ Download full universe in memory (no cache)
-# ============================================
-def download_data(tickers, years=15, cache_path=None):
     end = datetime.now()
     start = end - timedelta(days=years * 365)
 
-    # ✅ Only use cache if requested AND cache contains all tickers
-    if cache_path and os.path.exists(cache_path):
-        print(f"📂 Found cache at {cache_path} — validating tickers...")
-        cached = _read_csv_any(cache_path)
-        if all(t in cached.columns for t in tickers):
-            print("✅ Cache contains full universe. Using it.")
-            return cached[tickers]
-        else:
-            print("⚠️ Cache missing tickers. Downloading fresh...")
+    print(f"📡 Fetching {len(tickers)} tickers from Yahoo Finance...")
 
-    print("⬇️ Downloading fresh data from Yahoo Finance...")
-    data = yf.download(
+    df = yf.download(
         tickers,
         start=start,
         end=end,
-        auto_adjust=True,    # ✅ newest yfinance default behavior
-        progress=False
+        progress=True,
+        group_by="ticker"
     )
 
-    # ✅ Some downloads return MultiIndex (e.g., Open/High/Low/Close)
-    if isinstance(data.columns, pd.MultiIndex):
-        if "Close" in data.columns.get_level_values(0):
-            data = data["Close"]
-        else:
-            raise RuntimeError("❌ Could not find Close prices in MultiIndex download.")
-    else:
-        data = data.rename(columns=lambda x: x.strip())
+    # ✅ Convert to simple wide DataFrame with Close prices
+    closes = pd.DataFrame({
+        t: df[t]["Close"] for t in tickers if t in df and "Close" in df[t]
+    })
 
-    data = data.ffill().dropna(how="all")
+    closes.dropna(axis=1, how="all", inplace=True)
+    closes.to_csv(f"{DATA_DIR}/all_closes.csv")
 
-    print(f"📈 Downloaded {data.shape[1]} tickers with {data.shape[0]} rows.")
-    return data
+    print(f"✅ Downloaded {closes.shape[1]} tickers with {closes.shape[0]} rows of history")
+    return closes
 
+# ✅ Load only selected trading pair
+def load_pair_prices(filepath="data/stocks.csv"):
+    return pd.read_csv(filepath, index_col=0, parse_dates=True)
 
-# ============================================
-# ✅ Load only the saved optimal pair later on
-# ============================================
-def load_data(cache_path="data/stocks.csv"):
-    if not os.path.exists(cache_path):
-        raise FileNotFoundError(f"No cached pair found at {cache_path}. Run main.py first.")
-    print(f"📄 Loading pair data from {cache_path}...")
-    return _read_csv_any(cache_path)
+# ✅ Split dataset for walk-forward evaluation
+def split_data(closes):
+    n = len(closes)
+    train_end = int(n * 0.6)
+    test_end = int(n * 0.8)
 
-def split_data(df, train_ratio=0.6, test_ratio=0.2):
-    """
-    Chronological split into Train, Test, Validation
-    avoiding look-ahead bias.
-    """
-    n = len(df)
-    train_end = int(n * train_ratio)
-    test_end = train_end + int(n * test_ratio)
-
-    train = df.iloc[:train_end].copy()
-    test = df.iloc[train_end:test_end].copy()
-    valid = df.iloc[test_end:].copy()
+    train = closes.iloc[:train_end]
+    test = closes.iloc[train_end:test_end]
+    valid = closes.iloc[test_end:]
 
     return train, test, valid
