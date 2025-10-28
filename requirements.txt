@@ -6,3 +6,4 @@ yfinance>=0.2.38
 tqdm>=4.66
 optuna>=3.0
 scipy>=1.13
+pykalman>=0.9.5

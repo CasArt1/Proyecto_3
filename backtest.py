@@ -1,70 +1,100 @@
-# ==========================================================
-# backtest.py
-# ==========================================================
-# Performs mean-reversion backtest based on Kalman-filtered
-# hedge ratio and Z-score signal thresholds.
-# ==========================================================
-
 import numpy as np
-import pandas as pd
+from kalman_filter import run_kalman
 
-def compute_zscore(spread, window=60):
-    """Computes rolling Z-score of a spread."""
-    mean = spread.rolling(window).mean()
-    std = spread.rolling(window).std()
-    return (spread - mean) / std
 
-def run_backtest(stock_x, stock_y, q=0.001, r=0.001, 
-                 entry_z=2.0, exit_z=0.5, window=60, kalman_cls=None):
-    """
-    Runs the Kalman-based pair trading strategy.
-    Returns a dictionary with Sharpe ratio, PnL, and trade stats.
-    """
-    from kalman_filter import KalmanFilterHedgeRatio
+def run_backtest(x, y,
+                 q=0.001, r=0.001,
+                 z_entry=2.0, z_exit=0.5,
+                 sizing=0.40,
+                 costs_bps=12.5,
+                 borrow_annual=0.0025):
 
-    n = len(stock_x)
-    kf = kalman_cls(q=q, r=r) if kalman_cls else KalmanFilterHedgeRatio(q=q, r=r)
-    betas, spreads = [], []
+    # Reset index for safety
+    df = (
+        {'x': x.values, 'y': y.values}
+    )
+    x = np.array(x)
+    y = np.array(y)
 
-    # 1️⃣ Apply Kalman filter dynamically
-    for t in range(n):
-        kf.predict()
-        beta_t = kf.update(stock_x.iloc[t], stock_y.iloc[t])
-        spread_t = stock_y.iloc[t] - beta_t * stock_x.iloc[t]
-        betas.append(beta_t)
-        spreads.append(spread_t)
+    # === Kalman Filter Estimation === #
+    kf = run_kalman(x, y, q=q, r=r)
 
-    spread_series = pd.Series(spreads, index=stock_x.index)
-    z = compute_zscore(spread_series, window)
-    betas = pd.Series(betas, index=stock_x.index)
+    beta = np.array(kf["beta"])
+    alpha = np.array(kf["alpha"])
+    spread = np.array(kf["spread"])
+    zscore = np.array(kf["zscore"])
 
-    # 2️⃣ Generate trading signals
-    position = 0  # 1 = long spread, -1 = short spread, 0 = flat
-    pnl = []
-    for i in range(1, len(z)):
+    # === Trading State === #
+    position = 0  # 0=flat, 1=long spread, -1=short spread
+    pnl = [1.0]  # Equity curve
+    trades = 0
+
+    # Convert fees
+    cost_rate = costs_bps / 10000
+    borrow_daily = borrow_annual / 252
+
+    # === Backtest Loop === #
+    for i in range(1, len(x)):
+        equity = pnl[-1]
+
         if position == 0:
-            if z.iloc[i] > entry_z:
-                position = -1  # short spread
-            elif z.iloc[i] < -entry_z:
-                position = 1   # long spread
-        elif position == 1 and z.iloc[i] > -exit_z:
-            position = 0
-        elif position == -1 and z.iloc[i] < exit_z:
-            position = 0
+            # OPEN TRADE
+            if zscore[i] > z_entry:  # Spread too high ✅ SHORT spread
+                position = -1
+                trades += 1
+                equity *= (1 - cost_rate)
 
-        # Δspread between steps → profit for position
-        pnl.append(position * (spread_series.iloc[i] - spread_series.iloc[i-1]))
+            elif zscore[i] < -z_entry:  # Spread too low ✅ LONG spread
+                position = 1
+                trades += 1
+                equity *= (1 - cost_rate)
 
-    pnl = pd.Series(pnl, index=stock_x.index[1:])
-    pnl = pnl.fillna(0)
-    sharpe = np.sqrt(252) * pnl.mean() / pnl.std() if pnl.std() > 0 else 0.0
-    cumulative = pnl.cumsum()
+        else:
+            # CLOSE TRADE
+            if abs(zscore[i]) < z_exit:
+                position = 0
+                equity *= (1 - cost_rate)  # exit cost
+
+        # === Apply returns from position === #
+        leg_allocation = sizing * equity  # 40% each leg
+        hedge_ratio = beta[i]
+
+        if position != 0:
+            # Spread return approximation
+            ret = (x[i] - x[i - 1]) - hedge_ratio * (y[i] - y[i - 1])
+
+            equity += position * leg_allocation * ret
+
+            # Borrow cost applies if short leg exists
+            if position != 0:
+                equity -= abs(leg_allocation * borrow_daily)
+
+        pnl.append(equity)
+
+    pnl = np.array(pnl)
+
+    total_return = (pnl[-1] / pnl[0] - 1) * 100
+    daily_returns = np.diff(pnl) / pnl[:-1]
+    sharpe = np.mean(daily_returns) / np.std(daily_returns) * np.sqrt(252) if np.std(daily_returns) > 0 else 0
+    max_dd = (np.min(pnl) / np.max(pnl) - 1) * 100
+    win_rate = np.mean(daily_returns > 0) * 100
 
     return {
-        "Sharpe": sharpe,
-        "PnL": pnl,
-        "Cumulative": cumulative,
-        "Betas": betas,
-        "Spread": spread_series,
-        "Zscore": z
+        # Performance metrics
+        "final_equity": float(pnl[-1]),
+        "total_return_pct": float(total_return),
+        "sharpe_daily": float(sharpe),
+        "max_drawdown_pct": float(max_dd),
+        "trades": trades,
+        "win_rate_pct": float(win_rate),
+        "sizing_mode": "per_leg",
+        "costs_bps": costs_bps,
+        "borrow_annual_pct": borrow_annual * 100,
+
+        # ✅ Add these for plotting
+        "spread": spread,
+        "zscore": zscore,
+        "beta": beta,
+        "equity_curve": pnl
     }
+

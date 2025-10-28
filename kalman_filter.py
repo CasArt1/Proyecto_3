@@ -1,63 +1,63 @@
-# ==========================================================
-# kalman_filter.py
-# ==========================================================
-# Implements a two-state Kalman Filter to dynamically
-# estimate intercept (beta0) and hedge ratio (beta1)
-# between two assets.
-# ==========================================================
-
 import numpy as np
-import pandas as pd
-import os
+from pykalman import KalmanFilter
 
-class KalmanFilterHedgeRatio:
-    def __init__(self, q=0.001, r=0.001, save_path=None):
-        """
-        q : process noise (controls beta drift speed)
-        r : measurement noise (controls sensitivity to errors)
-        save_path : optional CSV file to store beta time series
-        """
-        # Initial state [intercept, hedge_ratio]
-        self.x = np.array([0.0, 1.0])
-        # State covariance matrix
-        self.P = np.eye(2) * 100.0
-        # Process noise covariance
-        self.Q = np.eye(2) * q
-        # Measurement noise covariance
-        self.R = np.array([[r]])
-        # State transition matrix
-        self.A = np.eye(2)
-        # Measurement matrix (updated every observation)
-        self.C = None
 
-        # Keep record of evolution
-        self.history = []
-        self.save_path = save_path
+def run_kalman(x, y, q=0.001, r=0.001):
+    """
+    Returns:
+        dict with keys: beta, alpha, spread, zscore
+    """
 
-    def predict(self):
-        """Predict step"""
-        self.x = self.A @ self.x
-        self.P = self.A @ self.P @ self.A.T + self.Q
+    # Convert to numpy
+    x = np.array(x).flatten()
+    y = np.array(y).flatten()
 
-    def update(self, x_obs, y_obs):
-        """Update step given new observation (x_obs, y_obs)"""
-        self.C = np.array([[1.0, x_obs]])
-        y_pred = self.C @ self.x
-        innovation = y_obs - y_pred
-        S = self.C @ self.P @ self.C.T + self.R
-        K = self.P @ self.C.T @ np.linalg.inv(S)
-        self.x = self.x + K @ innovation
-        self.P = (np.eye(2) - K @ self.C) @ self.P
+    # Drop NaNs
+    mask = ~(np.isnan(x) | np.isnan(y))
+    x = x[mask]
+    y = y[mask]
 
-        # Save results
-        self.history.append((self.x[0], self.x[1]))  # intercept, beta
-        return self.x[1]  # current hedge ratio
+    # Kalman Filter setup
+    # State: [beta, alpha]
+    transition_matrix = np.eye(2)  # Keep prev state
+    transition_covariance = q * np.eye(2)
 
-    def get_hedge_series(self):
-        """Return DataFrame of intercept and hedge ratio over time"""
-        df = pd.DataFrame(self.history, columns=["intercept", "beta"])
-        if self.save_path:
-            os.makedirs(os.path.dirname(self.save_path), exist_ok=True)
-            df.to_csv(self.save_path, index=False)
-            print(f"💾 Saved Kalman beta evolution to {self.save_path}")
-        return df
+    # Obs model: x_t = beta * y_t + alpha
+    observation_matrix = np.column_stack([y, np.ones_like(y)])
+    observation_covariance = r * np.eye(1)
+
+    # Reshape obs_matrix for pykalman: (timesteps, 1, 2)
+    observation_matrix = observation_matrix.reshape((-1, 1, 2))
+
+    # Initialize Kalman Filter
+    kf = KalmanFilter(
+        transition_matrices=transition_matrix,
+        observation_matrices=observation_matrix,
+        transition_covariance=transition_covariance,
+        observation_covariance=observation_covariance,
+        initial_state_mean=np.zeros(2),
+        initial_state_covariance=np.eye(2)
+    )
+
+    # Run filter
+    state_means, _ = kf.smooth(x)
+
+    beta = state_means[:, 0]
+    alpha = state_means[:, 1]
+
+    # Spread
+    spread = x - (beta * y + alpha)
+
+    # Z-score
+    spread_mean = np.nanmean(spread)
+    spread_std = np.nanstd(spread)
+    zscore = (spread - spread_mean) / spread_std
+
+    return {
+        "beta": beta,
+        "alpha": alpha,
+        "spread": spread,
+        "zscore": zscore,
+        "clean_x": x,
+        "clean_y": y
+    }
