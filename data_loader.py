@@ -1,64 +1,44 @@
-import yfinance as yf
-import matplotlib.pyplot as plt
-import pandas as pd
+# ==========================================================
+# data_loader.py
+# ==========================================================
+# Handles dynamic downloading and caching of Adjusted Close
+# prices for selected tickers using Yahoo Finance.
+# ==========================================================
+
 import os
+import yfinance as yf
+import pandas as pd
+from datetime import datetime, timedelta
 
-DATA_FOLDER = "data"
-DATA_FILE = os.path.join(DATA_FOLDER, "stocks.csv")
+def download_data(tickers, years=15, cache_path="data/stocks.csv"):
+    """
+    Downloads Adjusted Close prices for the given tickers from Yahoo Finance.
+    If a cached file exists, it loads it instead of re-downloading.
+    """
+    os.makedirs("data", exist_ok=True)
+    end = datetime.now()
+    start = end - timedelta(days=years * 365)
 
-def download_data(tickers, folder=DATA_FOLDER, force_download=False):
-    if not os.path.exists(folder):
-        os.makedirs(folder)
+    # If cached file exists, reuse it
+    if os.path.exists(cache_path):
+        print(f"📂 Using cached data from {cache_path}")
+        df = pd.read_csv(cache_path, index_col="Date", parse_dates=True)
+        return df
 
-    if os.path.exists(DATA_FILE) and not force_download:
-        return load_data(folder)
+    print("⬇️ Downloading fresh data from Yahoo Finance...")
+    data = yf.download(tickers, start=start, end=end, progress=False)["Adj Close"]
 
-    data = yf.download(tickers, start="2010-01-01", end="2025-01-20")["Close"]
-    
-    # Split data into train/test/validation
-    total_rows = len(data)
-    train_size = int(total_rows * 0.6)
-    test_size = int(total_rows * 0.2)
-    
-    train_data = data.iloc[:train_size]
-    test_data = data.iloc[train_size:train_size + test_size]
-    validation_data = data.iloc[train_size + test_size:]
-    
-    # Save all datasets
-    data.to_csv(DATA_FILE)
-    train_data.to_csv(os.path.join(DATA_FOLDER, "train_data.csv"))
-    test_data.to_csv(os.path.join(DATA_FOLDER, "test_data.csv"))
-    validation_data.to_csv(os.path.join(DATA_FOLDER, "validation_data.csv"))
-    
+    # Clean data
+    data = data.ffill().dropna(how="all")
+    data.to_csv(cache_path)
+    print(f"💾 Saved data to {cache_path}")
+
     return data
 
-def load_data(folder=DATA_FOLDER):
-    file_path = os.path.join(folder, "stocks.csv")
-    df = pd.read_csv(file_path, index_col=0, parse_dates=True)
-    return df
-
-def plot_prices(data):
-    plt.figure(figsize=(14, 7))
-    for column in data.columns:
-        plt.plot(data.index, data[column], label=column)
-    
-    plt.title('Precio de Cierre de los Activos (Últimos 15 años)')
-    plt.xlabel('Fecha')
-    plt.ylabel('Precio de Cierre (USD)')
-    plt.legend()
-    plt.grid(True)
-    plt.show()
-
-def plot_normalized(data, tickers):
-    normalized_data = data / data.iloc[0] * 100
-
-    plt.figure(figsize=(14, 7))
-    plt.plot(normalized_data.index, normalized_data[tickers[0]], label=tickers[0], color='blue')
-    plt.plot(normalized_data.index, normalized_data[tickers[1]], label=tickers[1], color='orange')
-    
-    plt.title(f'Comparación de Precios Normalizados de {tickers[0]} y {tickers[1]}')
-    plt.xlabel('Fecha')
-    plt.ylabel('Índice Base 100')
-    plt.legend()
-    plt.grid(True)
-    plt.show()
+def load_data(cache_path="data/stocks.csv"):
+    """
+    Loads previously saved Adjusted Close data.
+    """
+    if not os.path.exists(cache_path):
+        raise FileNotFoundError("No cached data found. Run download_data() first.")
+    return pd.read_csv(cache_path, index_col="Date", parse_dates=True)
