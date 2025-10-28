@@ -45,33 +45,28 @@ def plot_results(result, stock_x, stock_y, title, entry_z=None, exit_z=None):
         axs[2].legend()
         axs[2].grid(alpha=0.3)
 
-    # === Equity Curve + Trade Markers ✅ ===
-    if equity_curve is not None and equity_curve.notna().any():
-        ax = axs[3]
-        ax.plot(equity_curve.index, equity_curve.values, label="Equity Curve", color="black", linewidth=1.8)
+        # === Equity Curve + Trade Markers ✅ ===
+        if equity_curve is not None and equity_curve.notna().any():
+            ax = axs[3]
+            ax.plot(equity_curve.index, equity_curve.values, label="Equity Curve", color="black", linewidth=1.8)
 
-        # Build position vector from z-score
-        pos = pd.Series(0, index=z.index)
-        pos[z > entry_z] = -1
-        pos[z < -entry_z] = +1
-        pos[(z.abs() < exit_z)] = 0
-        pos = pos.replace(to_replace=0, method="ffill").fillna(0).astype(int)
+            # === Trade markers desde el resultado del backtester ===
+            entries = result.get("entries", [])
+            exits   = result.get("exits", [])
+            sides   = result.get("entry_sides", [])
 
-        # Identify trade signals
-        entries = pos.diff().fillna(0)
+            if entries and sides:
+                long_idx  = [ts for ts, s in zip(entries, sides) if s == 1]
+                short_idx = [ts for ts, s in zip(entries, sides) if s == -1]
+                ax.scatter(long_idx,  equity_curve.loc[long_idx],  marker="^", s=70, label="Long Entry")
+                ax.scatter(short_idx, equity_curve.loc[short_idx], marker="v", s=70, label="Short Entry")
 
-        entry_long = entries[entries == 1].index
-        entry_short = entries[entries == -1].index
-        exits = entries[entries.abs() == -1].index  # close of a position
+            if exits:
+                ax.scatter(exits, equity_curve.loc[exits], marker="o", s=55, label="Exit")
 
-        # Plot markers
-        ax.scatter(entry_long, equity_curve.loc[entry_long], marker="^", c="green", s=70, label="Long Entry")
-        ax.scatter(entry_short, equity_curve.loc[entry_short], marker="v", c="red", s=70, label="Short Entry")
-        ax.scatter(exits, equity_curve.loc[exits], marker="o", c="orange", s=55, label="Exit")
+            ax.set_title("PnL / Equity Curve + Trades (Backtester)")
+            ax.legend()
+            ax.grid(alpha=0.3)
 
-        ax.set_title("PnL / Equity Curve + Trades")
-        ax.legend()
-        ax.grid(alpha=0.3)
-
-    plt.tight_layout()
-    plt.show()
+        plt.tight_layout()
+        plt.show()
