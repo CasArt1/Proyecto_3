@@ -1,54 +1,40 @@
-# data_loader.py
 import os
-import pandas as pd
 import yfinance as yf
-from datetime import datetime, timedelta
+import pandas as pd
+from pair_selection import get_us_tech50
 
-DATA_DIR = "data"
-os.makedirs(DATA_DIR, exist_ok=True)
+def download_data(years: int = 15) -> pd.DataFrame:
+    """
+    Downloads 15 years of daily price data for the selected universe.
+    """
+    tickers = get_us_tech50()
+    print(f"📥 Downloading market data for {len(tickers)} tickers...")
 
-# ✅ Download universe-level OHLCV data
-def download_data(tickers=None, years=15):
-    if tickers is None:
-        # Default — first 100 S&P tickers (saved by pair_selection)
-        tickers = pd.read_csv("data/sp100.csv")["Symbol"].tolist()
-
-    end = datetime.now()
-    start = end - timedelta(days=years * 365)
-
-    print(f"📡 Fetching {len(tickers)} tickers from Yahoo Finance...")
-
-    df = yf.download(
+    data = yf.download(
         tickers,
-        start=start,
-        end=end,
-        progress=True,
-        group_by="ticker"
-    )
+        period=f"{years}y",
+        interval="1d",
+        auto_adjust=True,
+        progress=True
+    )["Close"]
 
-    # ✅ Convert to simple wide DataFrame with Close prices
-    closes = pd.DataFrame({
-        t: df[t]["Close"] for t in tickers if t in df and "Close" in df[t]
-    })
+    # Drop tickers that failed to download
+    data = data.dropna(axis=1, how="all")
+    print(f"✅ Data loaded. Valid tickers: {len(data.columns)}")
 
-    closes.dropna(axis=1, how="all", inplace=True)
-    closes.to_csv(f"{DATA_DIR}/all_closes.csv")
+    os.makedirs("data", exist_ok=True)
+    data.to_csv("data/all_prices.csv")
+    print("💾 Saved → data/all_prices.csv")
 
-    print(f"✅ Downloaded {closes.shape[1]} tickers with {closes.shape[0]} rows of history")
-    return closes
+    return data
 
-# ✅ Load only selected trading pair
-def load_pair_prices(filepath="data/stocks.csv"):
-    return pd.read_csv(filepath, index_col=0, parse_dates=True)
-
-# ✅ Split dataset for walk-forward evaluation
-def split_data(closes):
+def split_data(closes: pd.DataFrame):
+    """
+    Chronological 60/20/20 split.
+    """
     n = len(closes)
-    train_end = int(n * 0.6)
-    test_end = int(n * 0.8)
-
-    train = closes.iloc[:train_end]
-    test = closes.iloc[train_end:test_end]
-    valid = closes.iloc[test_end:]
-
+    train = closes.iloc[: int(n * 0.60)].copy()
+    test  = closes.iloc[int(n * 0.60): int(n * 0.80)].copy()
+    valid = closes.iloc[int(n * 0.80):].copy()
     return train, test, valid
+

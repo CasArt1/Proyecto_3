@@ -1,64 +1,102 @@
-# main.py
 import json
-from pathlib import Path
-
-from data_loader import load_pair_prices, split_data
+import pandas as pd
+from data_loader import download_data
 from backtest import run_backtest
 from visualize import plot_results
 
-
-def run_segment(name, x, y, q, r, z_entry, z_exit):
-    print(f"\n📊 {name} summary:")
-    metrics = run_backtest(
-        x, y,
-        q=q, r=r,
-        entry_z=z_entry,
-        exit_z=z_exit,
-        sizing=0.40,
-        costs_bps=12.5,
-        borrow_annual=0.0025
-    )
-    print(metrics)
-    return metrics
-
+TOP5_PARAMS_FILE = "data/best_kf_params_top5.json"
+TOP_PAIRS_FILE = "data/top_pairs.csv"
 
 def main():
-    # Load pair prices (already saved as data/stocks.csv by pair selection)
-    closes = load_pair_prices("data/stocks.csv")
-    train, test, valid = split_data(closes)
+    # Load prices
+    closes = download_data()
 
-    x_train, y_train = train.iloc[:, 0], train.iloc[:, 1]
-    x_test, y_test = test.iloc[:, 0], test.iloc[:, 1]
-    x_valid, y_valid = valid.iloc[:, 0], valid.iloc[:, 1]
+    # Load optimized params
+    with open(TOP5_PARAMS_FILE, "r") as f:
+        best_params_dict = json.load(f)
 
-    # Load optimized KF + Z band parameters
-    params_path = Path("data/best_kf_params.json")
-    if not params_path.exists():
-        raise FileNotFoundError("⚠️ best_kf_params.json not found! Run optimize.py first.")
+    # Load Top-5 pairs
+    top_pairs = pd.read_csv(TOP_PAIRS_FILE)
 
-    params = json.loads(params_path.read_text())
-    q = 10.0 ** params["log10_q"]
-    r = 10.0 ** params["log10_r"]
-    z_entry = params["z_entry"]
-    z_exit = params["z_exit"]
+    results = []
 
-    print("\n✅ Using Optimized Parameters:")
-    print(f"Q = {q:.2e}, R = {r:.2e}, Entry Z = {z_entry:.2f}, Exit Z = {z_exit:.2f}")
+    # Loop through Top-5 pairs
+    for _, row in top_pairs.iterrows():
+        x_t, y_t = row["x"], row["y"]
+        print(f"\n📌 Evaluating pair: {x_t}-{y_t}")
 
-    # Optionally see TRAIN results using tuned params
-    run_segment("TRAIN (60%)", x_train, y_train, q, r, z_entry, z_exit)
+        key = f"{x_t}-{y_t}"
+        params = best_params_dict.get(key)
+        if not params:
+            print(f"⚠️ No params for {x_t}-{y_t}, skipping.")
+            continue
 
-    # PERFORMANCE ON TEST + VALIDATION
-    test_res = run_segment("TEST (20%)", x_test, y_test, q, r, z_entry, z_exit)
-    valid_res = run_segment("VALID (20%)", x_valid, y_valid, q, r, z_entry, z_exit)
+        Q = 10 ** params["log10_q"]
+        R = 10 ** params["log10_r"]
+        entry_z = params["z_entry"]
+        exit_z = params["z_exit"]
 
-    # ✅ Plot the strategy using TEST set only
-    plot_results(x_test, y_test, test_res, z_entry, z_exit)
+        # Clean/aligned series
+        df = closes[[x_t, y_t]].dropna()
+        x, y = df[x_t], df[y_t]
 
-    print("\n✅ SUCCESS! Review TEST and VALID results above.")
-    print("📈 Chart window shown for TEST segment. Close it to end.")
+        n = len(df)
+        train_split = int(n * 0.6)
+        test_split = int(n * 0.8)
+
+        x_train, x_test, x_val = x[:train_split], x[train_split:test_split], x[test_split:]
+        y_train, y_test, y_val = y[:train_split], y[train_split:test_split], y[test_split:]
+
+        metrics_valid = run_backtest(x_val, y_val, Q, R, entry_z, exit_z)
+
+        # Filter out broken results
+        if (metrics_valid is None or
+            pd.isna(metrics_valid.get("sharpe_daily", None)) or
+            metrics_valid.get("trades", 0) == 0):
+            print(f"⚠️ {x_t}-{y_t} invalid, skipping.")
+            continue
+
+        # ✅ Store everything for plotting later!
+        results.append({
+            "pair": f"{x_t}-{y_t}",
+            "entry_z": entry_z,
+            "exit_z": exit_z,
+            "x_test": x_test,
+            "y_test": y_test,
+            **metrics_valid
+        })
+
+        print(f"✅ {x_t}-{y_t} VALID results:")
+        print(metrics_valid)
+
+    print("\n🏁 FINAL VALIDATION COMPLETE ✅")
+    print("\n🔥 Ranking pairs by Sharpe:")
+
+    if len(results) == 0:
+        print("❌ No valid pairs survived. Exiting.")
+        return
+
+    # Sort
+    results = sorted(results, key=lambda r: r["sharpe_daily"], reverse=True)
+
+    for r in results:
+        print(f"{r['pair']:>10} | Sharpe: {r['sharpe_daily']:.4f} | Return: {r['total_return_pct']:.2f}%")
+
+    # ✅ Plot best pair
+    best = results[0]
+    pair = best["pair"]
+
+    print(f"\n📈 Plotting BEST pair: {pair}")
+
+    plot_results(
+        best,
+        best["x_test"],
+        best["y_test"],
+        f"BEST VALID — {pair}",
+        best["entry_z"],
+        best["exit_z"]
+    )
 
 
 if __name__ == "__main__":
     main()
-

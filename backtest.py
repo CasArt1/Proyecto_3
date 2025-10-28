@@ -157,6 +157,7 @@ def run_backtest(stock_x: pd.Series,
         "Spread": spread,                # pandas Series
         "Z": z,                          # pandas Series
         "Hedge": hedge,                  # pandas Series
+        "equity_curve": equity_series    # ✅ NEW — enables PnL chart
     }
 
 
